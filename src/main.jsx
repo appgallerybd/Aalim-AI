@@ -4,19 +4,13 @@ import{Sparkles,Menu,Plus,MessageSquare,Trash2,Settings2,Sun,Moon,Send,Copy,Chec
 import'./style.css';
 
 const API='https://generativelanguage.googleapis.com/v1beta';
-const FALLBACK_MODELS=[
- {name:'models/gemini-2.5-flash',displayName:'Gemini 2.5 Flash',description:'Fast and versatile for everyday tasks'},
- {name:'models/gemini-2.5-pro',displayName:'Gemini 2.5 Pro',description:'Advanced reasoning and complex tasks'},
- {name:'models/gemini-2.5-flash-lite',displayName:'Gemini 2.5 Flash-Lite',description:'Lightweight and efficient'},
- {name:'models/gemini-2.0-flash',displayName:'Gemini 2.0 Flash',description:'Fast multimodal model'}
-];
 const uid=()=>Math.random().toString(36).slice(2,10);
 const getModelId=m=>(m.name||'').replace(/^models\//,'');
 function App(){
  const[apiKey,setApiKey]=useState(()=>localStorage.getItem('aalim_gemini_key')||'');
  const[keyDraft,setKeyDraft]=useState('');const[keyOpen,setKeyOpen]=useState(false);const[keyError,setKeyError]=useState('');
  const[connected,setConnected]=useState(false);const[connecting,setConnecting]=useState(false);
- const[models,setModels]=useState(FALLBACK_MODELS);const[modelId,setModelId]=useState(()=>localStorage.getItem('aalim_gemini_model')||'gemini-2.5-flash');
+ const[models,setModels]=useState([]);const[modelId,setModelId]=useState(()=>localStorage.getItem('aalim_gemini_model')||'');
  const[prompt,setPrompt]=useState('');const[threads,setThreads]=useState(()=>{try{return JSON.parse(localStorage.getItem('aalim_gemini_chats')||'[]')}catch{return[]}});
  const[activeId,setActiveId]=useState(null);const[busy,setBusy]=useState(false);const[dark,setDark]=useState(()=>localStorage.getItem('aalim_theme')!=='light');
  const[sidebarOpen,setSidebarOpen]=useState(false);const[settingsOpen,setSettingsOpen]=useState(false);const[modelSearch,setModelSearch]=useState('');
@@ -35,34 +29,49 @@ function App(){
  useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),3000);return()=>clearTimeout(t)},[toast]);
  useEffect(()=>{if(apiKey)connectKey(apiKey,true)},[]);
  async function requestModels(key){
-  const r=await fetch(API+'/models?pageSize=1000',{headers:{'x-goog-api-key':key}});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok)throw apiError(r.status,data);
-  const rows=(data.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')&&!/embedding|aqa|imagen|veo|tts|robotics|computer-use/i.test(m.name||''));
-  return rows.length?rows:FALLBACK_MODELS;
+  const rows=[];let pageToken='';
+  for(let page=0;page<10;page++){
+   const query=new URLSearchParams({pageSize:'1000'});if(pageToken)query.set('pageToken',pageToken);
+   const r=await fetch(API+'/models?'+query.toString(),{headers:{'x-goog-api-key':key}});
+   const data=await r.json().catch(()=>({}));
+   if(!r.ok)throw apiError(r.status,data);
+   rows.push(...(data.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')));
+   pageToken=data.nextPageToken||'';if(!pageToken)break;
+  }
+  const unique=[...new Map(rows.filter(m=>m.name&&getModelId(m)).map(m=>[getModelId(m),m])).values()]
+   .sort((a,b)=>(a.displayName||a.name).localeCompare(b.displayName||b.name));
+  if(!unique.length)throw new Error('এই API Key দিয়ে generateContent সমর্থন করে এমন কোনো মডেল পাওয়া যায়নি। Google AI Studio-তে API Key, Project এবং API access যাচাই করুন।');
+  return unique;
  }
  function apiError(status,data){
   const message=data?.error?.message||data?.message||'';
-  if(status===400)return new Error('অনুরোধটি গ্রহণ করা যায়নি। API Key, মডেল ও ইনপুট যাচাই করুন। '+message);
-  if(status===401||status===403)return new Error('API Key গ্রহণ করা হয়নি। Google AI Studio থেকে সঠিক Gemini API Key দিন এবং API access যাচাই করুন।');
-  if(status===404)return new Error('এই মডেলটি পাওয়া যায়নি বা আপনার Key-তে অনুমোদিত নয়। Model Selector থেকে অন্য মডেল বেছে নিন।');
-  if(status===429)return new Error('Gemini API-এর rate limit বা quota শেষ হয়েছে। কিছুক্ষণ পর চেষ্টা করুন অথবা Google AI Studio-তে Usage ও Billing দেখুন।');
-  if(status>=500)return new Error('Google Gemini সার্ভারে সাময়িক সমস্যা হয়েছে। কিছুক্ষণ পর আবার চেষ্টা করুন।');
-  return new Error(message||'API request ব্যর্থ হয়েছে ('+status+')।');
+  const statusName=data?.error?.status||'';
+  const lower=(message+' '+statusName).toLowerCase();
+  if(status===400)return new Error('Gemini অনুরোধটি গ্রহণ করেনি। মডেলের সীমা বা Request Parameter মিলছে না। '+message);
+  if(status===401)return new Error('API Key ভুল বা আর বৈধ নেই। Google AI Studio থেকে Key যাচাই করে আবার Connect করুন।');
+  if(status===403)return new Error(lower.includes('leaked')||lower.includes('blocked')?'Google এই API Key-টি নিরাপত্তার কারণে ব্লক করেছে। Google AI Studio-তে নতুন Key তৈরি করুন।':'এই API Key/Project-এ Gemini API ব্যবহারের অনুমতি নেই। Google AI Studio-তে Project, API access ও Billing status যাচাই করুন। '+message);
+  if(status===404)return new Error('নির্বাচিত মডেলটি এই API সংস্করণে পাওয়া যাচ্ছে না। মডেল তালিকা Refresh করে API থেকে আসা অন্য মডেল নির্বাচন করুন। '+message);
+  if(status===429){
+   if(lower.includes('quota')||lower.includes('billing')||lower.includes('resource_exhausted'))return new Error('Google Gemini API-এর Quota/Billing সীমা শেষ হয়েছে। অন্য মডেল বেছে নিলেও একই Project-এর quota শেষ থাকলে উত্তর আসবে না। Google AI Studio-এর Usage & Billing দেখুন। '+message);
+   return new Error('Google Gemini API-তে সাময়িক Rate Limit হয়েছে। কিছুক্ষণ অপেক্ষা করে আবার চেষ্টা করুন। '+message);
+  }
+  if(status===408||status>=500)return new Error('Google Gemini সার্ভার বা নেটওয়ার্কে সাময়িক সমস্যা হয়েছে। আবার চেষ্টা করুন। '+message);
+  return new Error(message||'Gemini API request ব্যর্থ হয়েছে ('+status+')।');
  }
  async function connectKey(keyOverride,quiet=false){
   const key=(keyOverride||keyDraft).trim();if(!key){setKeyError('Google Gemini API Key লিখুন।');return false}
   setConnecting(true);setKeyError('');
   try{
    const rows=await requestModels(key);setModels(rows);
-   const existing=rows.some(m=>getModelId(m)===modelId);const preferred=existing?modelId:(rows.some(m=>getModelId(m)==='gemini-2.5-flash')?'gemini-2.5-flash':getModelId(rows[0]));
+   const savedModel=localStorage.getItem('aalim_gemini_model')||modelId;
+   const preferred=rows.some(m=>getModelId(m)===savedModel)?savedModel:getModelId(rows[0]);
    setModelId(preferred);localStorage.setItem('aalim_gemini_key',key);setApiKey(key);setConnected(true);setKeyOpen(false);setKeyDraft('');
    if(!quiet)setToast('Gemini API সফলভাবে কানেক্ট হয়েছে');return true;
   }catch(e){setConnected(false);if(quiet){setKeyOpen(true);setKeyError(e.message)}else setKeyError(e.message);return false}
   finally{setConnecting(false)}
  }
  function disconnect(){localStorage.removeItem('aalim_gemini_key');setApiKey('');setConnected(false);setKeyOpen(false);setKeyDraft('');setKeyError('');setToast('Gemini API সংযোগ বিচ্ছিন্ন হয়েছে')}
- async function refreshModels(){if(!apiKey){setKeyOpen(true);return}setConnecting(true);try{const rows=await requestModels(apiKey);setModels(rows);if(!rows.some(m=>getModelId(m)===modelId))setModelId(getModelId(rows[0]));setToast('Gemini মডেল তালিকা আপডেট হয়েছে')}catch(e){setToast(e.message)}finally{setConnecting(false)}}
+ async function refreshModels(){if(!apiKey){setKeyOpen(true);return}setConnecting(true);try{const rows=await requestModels(apiKey);setModels(rows);if(!rows.some(m=>getModelId(m)===modelId))setModelId(getModelId(rows[0]));setToast('API Key-তে পাওয়া '+rows.length+'টি Gemini মডেল লোড হয়েছে')}catch(e){setToast(e.message)}finally{setConnecting(false)}}
  function newChat(){setActiveId(null);setPrompt('');setSidebarOpen(false);setTimeout(()=>inputRef.current?.focus(),60)}
  function updateThread(id,fn){setThreads(prev=>prev.map(t=>t.id===id?fn(t):t))}
  async function sendMessage(e){
@@ -75,13 +84,35 @@ function App(){
   else updateThread(threadId,t=>({...t,messages:allMessages,updatedAt:Date.now()}));
   setPrompt('');setBusy(true);setSidebarOpen(false);
   try{
-   const contents=allMessages.map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));
-   const response=await fetch(API+'/models/'+encodeURIComponent(modelId)+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify({contents,systemInstruction:{parts:[{text:systemPrompt}]},generationConfig:{temperature,maxOutputTokens:maxTokens}})});
-   const data=await response.json().catch(()=>({}));
-   if(!response.ok)throw apiError(response.status,data);
+   const chosen=models.find(m=>getModelId(m)===modelId);
+   if(!chosen)throw new Error('মডেল তালিকায় নির্বাচিত মডেলটি নেই। API Key Connect করে মডেল তালিকা Refresh করুন।');
+   const contents=allMessages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:m.content}]}));
+   const tokenLimit=Math.max(1,Math.min(Number(maxTokens)||2048,Number(chosen.outputTokenLimit)||8192));
+   const tempLimit=Number.isFinite(Number(chosen.maxTemperature))?Number(chosen.maxTemperature):1;
+   const safeTemperature=Math.max(0,Math.min(Number(temperature)||0,tempLimit,1));
+   const requestBody={contents,generationConfig:{maxOutputTokens:tokenLimit}};
+   if(Number.isFinite(safeTemperature))requestBody.generationConfig.temperature=safeTemperature;
+   if(systemPrompt.trim())requestBody.systemInstruction={parts:[{text:systemPrompt}]};
+   let response,data;
+   for(let attempt=0;attempt<3;attempt++){
+    try{
+     response=await fetch(API+'/models/'+encodeURIComponent(getModelId(chosen))+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify(requestBody)});
+     data=await response.json().catch(()=>({}));
+    }catch(networkError){
+     if(attempt<2){await new Promise(resolve=>setTimeout(resolve,500*(2**attempt)));continue}
+     throw new Error('Google Gemini API-তে সংযোগ করা যাচ্ছে না। ইন্টারনেট/CORS সংযোগ পরীক্ষা করে আবার চেষ্টা করুন। '+(networkError.message||''));
+    }
+    if(response.ok)break;
+    const apiMessage=(data?.error?.message||'').toLowerCase();
+    const isHardQuota=response.status===429&&(apiMessage.includes('quota')||apiMessage.includes('billing')||apiMessage.includes('resource_exhausted'));
+    const retryable=(response.status===408||response.status===503||response.status===504||(response.status===429&&!isHardQuota));
+    if(!retryable||attempt===2)throw apiError(response.status,data);
+    await new Promise(resolve=>setTimeout(resolve,700*(2**attempt)));
+   }
+   if(!response?.ok)throw apiError(response?.status||500,data||{});
    const answer=(data.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').filter(Boolean).join('\n').trim();
    if(!answer){const reason=data.promptFeedback?.blockReason;throw new Error(reason?'এই অনুরোধটি Gemini-এর নিরাপত্তা ফিল্টারে আটকে গেছে ('+reason+')।':'মডেল খালি উত্তর দিয়েছে। অন্য মডেল বেছে নিয়ে আবার চেষ্টা করুন।')}
-   const reply={id:uid(),role:'assistant',content:answer,modelId,modelName:models.find(m=>getModelId(m)===modelId)?.displayName||modelId,createdAt:Date.now(),usage:data.usageMetadata||null};
+   const reply={id:uid(),role:'assistant',content:answer,modelId,modelName:chosen.displayName||modelId,createdAt:Date.now(),usage:data.usageMetadata||null};
    updateThread(threadId,t=>({...t,messages:[...t.messages,reply],updatedAt:Date.now()}));
   }catch(err){const errorMessage=err.message||'অজানা সমস্যা হয়েছে';updateThread(threadId,t=>({...t,messages:[...t.messages,{id:uid(),role:'error',content:errorMessage,createdAt:Date.now()}]}))}
   finally{setBusy(false);setTimeout(()=>inputRef.current?.focus(),30)}
