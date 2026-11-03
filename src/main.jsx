@@ -91,7 +91,9 @@ function App(){
    const tempLimit=Number.isFinite(Number(chosen.maxTemperature))?Number(chosen.maxTemperature):1;
    const safeTemperature=Math.max(0,Math.min(Number(temperature)||0,tempLimit,1));
    const requestBody={contents,generationConfig:{maxOutputTokens:tokenLimit}};
-   if(Number.isFinite(safeTemperature))requestBody.generationConfig.temperature=safeTemperature;
+   // Gemini 3.6+ and Gemini 4 ignore sampling controls; omit temperature to avoid INVALID_ARGUMENT.
+   const newerModel=/^gemini-(?:3\.(?:[6-9]|[1-9]\d)|[4-9]\.)/.test(getModelId(chosen));
+   if(!newerModel&&Number.isFinite(safeTemperature))requestBody.generationConfig.temperature=safeTemperature;
    if(systemPrompt.trim())requestBody.systemInstruction={parts:[{text:systemPrompt}]};
    let response,data;
    for(let attempt=0;attempt<3;attempt++){
